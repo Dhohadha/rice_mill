@@ -2,10 +2,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:rice_mill_/services/alert_manager.dart';
+import 'package:rice_mill/services/alert_manager.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'services/fcm_service.dart';
 import 'screens/home_screen.dart';
 import 'screens/notifications_screen.dart';
 import 'services/notification_service.dart';
+import 'services/providers.dart';
 
 Future<void> _requestPermissions() async {
   if (Platform.isAndroid) {
@@ -20,10 +23,15 @@ Future<void> _requestPermissions() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  await Firebase.initializeApp();
+  
   await _requestPermissions();
 
   final notificationService = NotificationService();
   await notificationService.init();
+
+  final fcmService = FCMService();
+  await fcmService.init();
 
   runApp(
     const ProviderScope(
@@ -39,13 +47,20 @@ class MyApp extends ConsumerStatefulWidget {
   ConsumerState<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends ConsumerState<MyApp> {
+class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _setupNotificationListeners();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   void _setupNotificationListeners() {
@@ -62,6 +77,21 @@ class _MyAppState extends ConsumerState<MyApp> {
     notificationService.onStopAlarmAction = () {
       ref.read(alertManagerProvider.notifier).stopAlarm();
     };
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      ref.read(mqttServiceProvider).disconnect();
+      ref.read(alertManagerProvider.notifier).stopAlarm();
+    } else if (state == AppLifecycleState.resumed) {
+      // Check if the Stop button was tapped while in background
+      ref.read(alertManagerProvider.notifier).syncStopState();
+      // Reconnect MQTT
+      ref.invalidate(mqttDataProvider);
+    }
   }
 
   @override

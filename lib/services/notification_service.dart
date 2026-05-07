@@ -1,13 +1,29 @@
+import 'dart:typed_data';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'alarm_service.dart';
+
+// Background handler - minimal, just records the stop request to SharedPreferences
+// We do NOT initialize Flutter engine here to avoid Samsung freeze bugs
+@pragma('vm:entry-point')
+void notificationTapBackground(NotificationResponse notificationResponse) async {
+  if (notificationResponse.actionId == 'stop_alarm') {
+    // Write the stop flag so main isolate picks it up on next resume
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('isAlarmStopped', true);
+    await prefs.setString('lastStoppedTime', DateTime.now().toIso8601String());
+  }
+}
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
   factory NotificationService() => _instance;
   NotificationService._internal();
 
-  final FlutterLocalNotificationsPlugin _notificationsPlugin = FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _notificationsPlugin =
+      FlutterLocalNotificationsPlugin();
 
-  // Callback for notification tap or action
+  // Callbacks for foreground tap handling
   Function(String?)? onNotificationTap;
   Function()? onStopAlarmAction;
 
@@ -15,7 +31,8 @@ class NotificationService {
     const AndroidInitializationSettings initializationSettingsAndroid =
         AndroidInitializationSettings('@mipmap/ic_launcher');
 
-    const DarwinInitializationSettings initializationSettingsIOS = DarwinInitializationSettings(
+    const DarwinInitializationSettings initializationSettingsIOS =
+        DarwinInitializationSettings(
       requestAlertPermission: true,
       requestBadgePermission: true,
       requestSoundPermission: true,
@@ -29,14 +46,24 @@ class NotificationService {
     await _notificationsPlugin.initialize(
       initializationSettings,
       onDidReceiveNotificationResponse: (NotificationResponse details) {
+        // This is called when app is FOREGROUND or BACKGROUND (brought to front)
         if (details.actionId == 'stop_alarm') {
+          AlarmService().stopAlarm();
           onStopAlarmAction?.call();
+          // Also clear the SharedPrefs flag if set by background
+          SharedPreferences.getInstance().then((prefs) {
+            prefs.setBool('isAlarmStopped', true);
+          });
         } else {
-          // Payload can be 'history' to navigate
           onNotificationTap?.call(details.payload);
         }
       },
+      onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
     );
+  }
+
+  Future<void> cancelAlert() async {
+    await _notificationsPlugin.cancel(999);
   }
 
   Future<void> showThresholdAlert({
@@ -45,33 +72,41 @@ class NotificationService {
     required String body,
     String? payload,
   }) async {
-    const AndroidNotificationDetails androidPlatformChannelSpecifics = AndroidNotificationDetails(
-      'threshold_alerts',
-      'Threshold Alerts',
-      channelDescription: 'Notifications for power threshold breaches',
+    final AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      'threshold_alerts_v10',
+      'Emergency Threshold Alerts',
+      channelDescription: 'Critical power alerts with action buttons',
       importance: Importance.max,
-      priority: Priority.high,
-      ticker: 'ticker',
+      priority: Priority.max,
+      visibility: NotificationVisibility.public,
       playSound: true,
+      ongoing: true,      // Samsung never collapses ongoing — button always visible
+      autoCancel: false,  // Only dismiss on explicit STOP action
+      sound: RawResourceAndroidNotificationSound('alarm'),
+      audioAttributesUsage: AudioAttributesUsage.alarm,
+      category: AndroidNotificationCategory.alarm,
+      fullScreenIntent: true,
+      enableVibration: true,
+      vibrationPattern: Int64List.fromList([0, 500, 200, 500]),
+      largeIcon: const DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
+      // No BigTextStyleInformation — Samsung shows action buttons inline in compact view
       actions: <AndroidNotificationAction>[
         AndroidNotificationAction(
           'stop_alarm',
-          'STOP ALARM',
-          showsUserInterface: true,
-          cancelNotification: false,
+          '🔕 STOP ALARM',
+          showsUserInterface: true,  // Required for button to work on Samsung
+          cancelNotification: true,
         ),
       ],
     );
 
-    const NotificationDetails platformChannelSpecifics = NotificationDetails(
-      android: androidPlatformChannelSpecifics,
-      iOS: DarwinNotificationDetails(
-        presentSound: true,
-      ),
+    final NotificationDetails platformChannelSpecifics = NotificationDetails(
+      android: androidDetails,
+      iOS: const DarwinNotificationDetails(presentSound: true),
     );
 
     await _notificationsPlugin.show(
-      id,
+      999,
       title,
       body,
       platformChannelSpecifics,

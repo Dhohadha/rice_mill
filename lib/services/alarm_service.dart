@@ -1,4 +1,6 @@
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart';
+
 
 class AlarmService {
   static final AlarmService _instance = AlarmService._internal();
@@ -18,7 +20,7 @@ class AlarmService {
       await _player.play(AssetSource('alarm.mp3'));
       _isPlaying = true;
     } catch (e) {
-      print('❌ Error playing alarm: $e');
+      debugPrint('❌ Error playing alarm: $e');
     }
   }
 
@@ -29,7 +31,7 @@ class AlarmService {
       await _player.stop();
       _isPlaying = false;
     } catch (e) {
-      print('❌ Error stopping alarm: $e');
+      debugPrint('❌ Error stopping alarm: $e');
     }
   }
 

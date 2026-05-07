@@ -9,6 +9,19 @@ const MeterData = require('./models/MeterData');
 const DailyUsage = require('./models/DailyUsage');
 const UserSettings = require('./models/UserSettings');
 const Notification = require('./models/Notification');
+const DeviceToken = require('./models/DeviceToken');
+const admin = require('firebase-admin');
+
+// Initialize Firebase Admin
+try {
+  const serviceAccount = require('./service_account_key.json');
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+  console.log('🔥 Firebase Admin initialized');
+} catch (err) {
+  console.error('❌ Firebase Admin initialization error:', err.message);
+}
 
 const app = express();
 app.use(cors());
@@ -34,6 +47,10 @@ mqttClient.on('connect', () => {
   });
 });
 
+// Throttle control for saving data
+let lastSaveTime = 0;
+const SAVE_INTERVAL = 60 * 1000; // 1 minute
+
 // Process incoming MQTT messages
 mqttClient.on('message', async (topic, message) => {
   console.log(`📩 Received message on [${topic}]:`, message.toString());
@@ -42,9 +59,13 @@ mqttClient.on('message', async (topic, message) => {
       const payload = JSON.parse(message.toString());
       if (payload.status === "no_data") return; 
 
-      const newData = new MeterData(payload);
-      await newData.save();
-      console.log('💾 Data saved to MongoDB');
+      const now = Date.now();
+      if (now - lastSaveTime >= SAVE_INTERVAL) {
+        const newData = new MeterData(payload);
+        await newData.save();
+        lastSaveTime = now;
+        console.log(`💾 Data saved to MongoDB (Meter: ${payload.meterId || 1}, KW: ${payload.KW})`);
+      }
 
       // Check limits
       let settings = await UserSettings.findOne();
@@ -54,14 +75,14 @@ mqttClient.on('message', async (topic, message) => {
       }
 
       const alerts = [];
-      if (payload.kVA_Total && payload.kVA_Total > settings.cmdLimit) {
-        alerts.push({ type: 'CMD', msg: `CMD Alert: Current kVA (${payload.kVA_Total}) exceeded limit (${settings.cmdLimit})!`});
+      if (payload.KVA && payload.KVA > settings.cmdLimit) {
+        alerts.push({ type: 'CMD', msg: `CMD Alert: Current kVA (${payload.KVA}) exceeded limit (${settings.cmdLimit})!`});
       }
-      if (payload.kW_Total && payload.kW_Total > settings.powerLimit) {
-        alerts.push({ type: 'POWER', msg: `POWER Alert: Current kW (${payload.kW_Total}) exceeded limit (${settings.powerLimit})!`});
+      if (payload.KW && payload.KW > settings.powerLimit) {
+        alerts.push({ type: 'POWER', msg: `POWER Alert: Current kW (${payload.KW}) exceeded limit (${settings.powerLimit})!`});
       }
-      if (payload.PF_Avg && payload.PF_Avg < settings.pfLimit) {
-        alerts.push({ type: 'PF', msg: `PF Alert: Current PF (${payload.PF_Avg}) fell below limit (${settings.pfLimit})!`});
+      if (payload.PF && payload.PF < settings.pfLimit) {
+        alerts.push({ type: 'PF', msg: `PF Alert: Current PF (${payload.PF}) fell below limit (${settings.pfLimit})!`});
       }
 
       for (let alert of alerts) {
@@ -72,7 +93,43 @@ mqttClient.on('message', async (topic, message) => {
         });
         if (!recentAlert) {
           await new Notification({ title: `Limit Exceeded`, message: alert.msg, type: alert.type }).save();
-          // TODO: Implement FCM push notifications if necessary
+          
+          // Send FCM push notifications
+          try {
+            const tokens = await DeviceToken.find();
+            const registrationTokens = tokens.map(t => t.token);
+
+            if (registrationTokens.length > 0) {
+              const message = {
+                data: {
+                  title: '⚠️ Rice Mill Alert',
+                  body: alert.msg,
+                },
+                tokens: registrationTokens,
+                android: {
+                  priority: 'high',
+                },
+              };
+
+              const response = await admin.messaging().sendEachForMulticast(message);
+              console.log(`📲 Successfully sent ${response.successCount} push notifications`);
+              
+              // Optional: Cleanup invalid tokens
+              if (response.failureCount > 0) {
+                const failedTokens = [];
+                response.responses.forEach((resp, idx) => {
+                  if (!resp.success) {
+                    failedTokens.push(registrationTokens[idx]);
+                  }
+                });
+                if (failedTokens.length > 0) {
+                  await DeviceToken.deleteMany({ token: { $in: failedTokens } });
+                }
+              }
+            }
+          } catch (fcmErr) {
+            console.error('❌ FCM Send Error:', fcmErr.message);
+          }
         }
       }
 
@@ -90,12 +147,12 @@ cron.schedule('0 0 * * *', async () => {
     const todayEnd = new Date(todayStart);
     todayEnd.setDate(todayStart.getDate() + 1);
 
-    // Find min and max kWh for the day
-    const minRec = await MeterData.findOne({ timestamp: { $gte: todayStart, $lt: todayEnd } }).sort({ kWh: 1 });
-    const maxRec = await MeterData.findOne({ timestamp: { $gte: todayStart, $lt: todayEnd } }).sort({ kWh: -1 });
+    // Find min and max KWH for the day
+    const minRec = await MeterData.findOne({ timestamp: { $gte: todayStart, $lt: todayEnd } }).sort({ KWH: 1 });
+    const maxRec = await MeterData.findOne({ timestamp: { $gte: todayStart, $lt: todayEnd } }).sort({ KWH: -1 });
 
     if (minRec && maxRec) {
-      const consumedKWh = maxRec.kWh - minRec.kWh;
+      const consumedKWh = maxRec.KWH - minRec.KWH;
       // Save for yesterday
       const yesterday = new Date(todayStart);
       yesterday.setDate(yesterday.getDate() - 1);
@@ -130,7 +187,9 @@ app.get('/api/history', async (req, res) => {
       startDate.setHours(now.getHours() - 24);
     }
 
+    console.log(`📊 Fetching history for range: ${range}`);
     const data = await MeterData.find({ timestamp: { $gte: startDate } }).sort({ timestamp: 1 });
+    console.log(`📈 Found ${data.length} history records`);
     // In production, we might want to group this data instead of returning all raw points.
     // However, since readings are every 10s, an hour is ~360 points (fine for chart).
     // A day is ~8640 points (might need downsampling, doing simple skip for now)
@@ -143,9 +202,9 @@ app.get('/api/history', async (req, res) => {
 
     res.json(chartData.map(d => ({ 
       timestamp: d.timestamp, 
-      kWh: d.kWh, 
-      kVA_Total: d.kVA_Total, 
-      kW_Total: d.kW_Total 
+      KWH: d.KWH, 
+      KVA: d.KVA, 
+      KW: d.KW 
     })));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -157,6 +216,7 @@ app.get('/api/settings', async (req, res) => {
   try {
     let settings = await UserSettings.findOne();
     if (!settings) settings = await new UserSettings().save();
+    console.log('⚙️ Settings fetched');
     res.json(settings);
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
@@ -177,6 +237,7 @@ app.post('/api/settings', async (req, res) => {
       { $set: updates },
       { returnDocument: 'after', upsert: true }
     );
+    console.log('✅ Settings updated in DB:', updates);
     res.json(settings);
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
@@ -205,6 +266,50 @@ app.delete('/api/notifications/:id', async (req, res) => {
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
+// Register FCM Token
+app.post('/api/fcm-token', async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'Token is required' });
+
+    await DeviceToken.findOneAndUpdate(
+      { token },
+      { lastUpdated: Date.now() },
+      { upsert: true }
+    );
+    console.log('✅ FCM Token registered/updated');
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Test Notification Route
+app.post('/api/test-notification', async (req, res) => {
+  try {
+    const { token, title, message } = req.body;
+    if (!token) return res.status(400).json({ error: 'Token is required' });
+
+    const payload = {
+      data: {
+        title: title || 'Test Notification',
+        body: message || 'This is a test notification from the server',
+      },
+      token: token,
+      android: {
+        priority: 'high',
+      },
+    };
+
+    const response = await admin.messaging().send(payload);
+    console.log('✅ Test notification sent successfully:', response);
+    res.json({ success: true, messageId: response });
+  } catch (err) {
+    console.error('❌ Test notification error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get Daily Usage for total calculation
 app.get('/api/daily-usage', async (req, res) => {
   try {
@@ -220,12 +325,15 @@ app.get('/api/daily-usage', async (req, res) => {
     // Also factor in "today's" consumption since midnight
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
-    const minToday = await MeterData.findOne({ timestamp: { $gte: todayStart } }).sort({ kWh: 1 });
-    const maxToday = await MeterData.findOne({ timestamp: { $gte: todayStart } }).sort({ kWh: -1 });
+    const minToday = await MeterData.findOne({ timestamp: { $gte: todayStart } }).sort({ KWH: 1 });
+    const maxToday = await MeterData.findOne({ timestamp: { $gte: todayStart } }).sort({ KWH: -1 });
 
     let todayConsumption = 0;
-    if (minToday && maxToday) {
-       todayConsumption = maxToday.kWh - minToday.kWh;
+    if (minToday && maxToday && maxToday.KWH >= minToday.KWH) {
+       todayConsumption = maxToday.KWH - minToday.KWH;
+    } else if (minToday && maxToday && maxToday.KWH < minToday.KWH) {
+       // Rollover case: assumes reset to 0
+       todayConsumption = maxToday.KWH;
     }
 
     res.json({ totalKWhConsumed: totalConsumption + todayConsumption });

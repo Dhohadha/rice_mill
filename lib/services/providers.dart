@@ -2,10 +2,11 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/app_settings.dart';
 import '../models/meter_data.dart';
-import '../services/api_service.dart';
 import '../services/mqtt_service.dart';
 import '../services/notification_service.dart';
 import '../services/alarm_service.dart';
+import '../services/api_service.dart';
+
 
 final apiServiceProvider = Provider((ref) => ApiService());
 final mqttServiceProvider = Provider((ref) => MqttService());
@@ -23,11 +24,11 @@ class SettingsNotifier extends Notifier<AppSettings?> {
   @override
   AppSettings? build() {
     _apiService = ref.watch(apiServiceProvider);
-    _loadSettings();
+    loadSettings();
     return null;
   }
 
-  Future<void> _loadSettings() async {
+  Future<void> loadSettings() async {
     try {
       final settings = await _apiService.getSettings();
       state = settings;
@@ -39,7 +40,7 @@ class SettingsNotifier extends Notifier<AppSettings?> {
   Future<void> updateSettings(Map<String, dynamic> updates) async {
     try {
       await _apiService.updateSettings(updates);
-      await _loadSettings();
+      await loadSettings();
     } catch (e) {
       // Error logging
     }

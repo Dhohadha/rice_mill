@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'notification_service.dart';
 import 'alarm_service.dart';
 import 'providers.dart';
@@ -63,7 +64,7 @@ class AlertManager extends Notifier<AlertState> {
     return AlertState();
   }
 
-  void _checkThresholds(MeterData data, AppSettings settings) {
+  Future<void> _checkThresholds(MeterData data, AppSettings settings) async {
     final List<String> currentAlerts = [];
     bool shouldTriggerAlarm = false;
 
@@ -104,16 +105,34 @@ class AlertManager extends Notifier<AlertState> {
       }
     }
 
+    // Sync with SharedPreferences (for background stop actions)
+    final prefs = await SharedPreferences.getInstance();
+    final isStoppedInBg = prefs.getBool('isAlarmStopped') ?? false;
+    
+    if (isStoppedInBg && !state.isAlarmStopped) {
+       state = state.copyWith(isAlarmStopped: true);
+    }
+
+    // Reset background flag if values return to normal
+    if (currentAlerts.isEmpty && isStoppedInBg) {
+       await prefs.setBool('isAlarmStopped', false);
+    }
+
     // Trigger or auto-stop alarm
-    if (shouldTriggerAlarm && !state.isAlarmPlaying) {
+    // Fix: Only trigger if not already playing AND not explicitly stopped for this breach
+    if (shouldTriggerAlarm && !state.isAlarmPlaying && !state.isAlarmStopped) {
       _alarmService.playAlarm();
       state = state.copyWith(isAlarmPlaying: true, isAlarmStopped: false, activeAlerts: currentAlerts);
     } else {
-      // Update displayed alerts even while alarm playing
+      // Update displayed alerts even while alarm playing or stopped
       if (currentAlerts.join(',') != state.activeAlerts.join(',')) {
         state = state.copyWith(activeAlerts: currentAlerts);
       }
-      // Auto-stop alarm when all values are back to normal
+      // Reset isAlarmStopped when values return to normal so the next breach can trigger
+      if (currentAlerts.isEmpty && state.isAlarmStopped) {
+        state = state.copyWith(isAlarmStopped: false);
+      }
+      // Auto-stop alarm sound when values return to normal
       if (currentAlerts.isEmpty && state.isAlarmPlaying) {
         stopAlarm();
       }
@@ -126,7 +145,7 @@ class AlertManager extends Notifier<AlertState> {
 
     if (lastTime == null || now.difference(lastTime) > _alertCooldown) {
       _notificationService.showThresholdAlert(
-        id: type.hashCode.abs(),
+        id: 999,
         title: title,
         body: body,
         payload: 'history',
@@ -135,9 +154,35 @@ class AlertManager extends Notifier<AlertState> {
     }
   }
 
-  void stopAlarm() {
+  void stopAlarm() async {
     _alarmService.stopAlarm();
+    _notificationService.cancelAlert();
+    
+    // Save to SharedPreferences for background/foreground sync
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('isAlarmStopped', true);
+    await prefs.setString('lastStoppedTime', DateTime.now().toIso8601String());
+
+    // Set local cooldown
+    _lastAlertTime.forEach((key, value) {
+      _lastAlertTime[key] = DateTime.now();
+    });
     state = state.copyWith(isAlarmPlaying: false, isAlarmStopped: true);
+  }
+
+  // Called on app resume to sync background stop actions
+  Future<void> syncStopState() async {
+    final prefs = await SharedPreferences.getInstance();
+    final isStoppedInBg = prefs.getBool('isAlarmStopped') ?? false;
+    if (isStoppedInBg) {
+      _alarmService.stopAlarm();
+      _notificationService.cancelAlert();
+      _lastAlertTime.forEach((key, value) {
+        _lastAlertTime[key] = DateTime.now();
+      });
+      state = state.copyWith(isAlarmPlaying: false, isAlarmStopped: true);
+      // Don't clear the flag here — let it clear when values normalise
+    }
   }
 }
 
