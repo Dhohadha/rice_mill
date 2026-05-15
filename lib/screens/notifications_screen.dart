@@ -70,7 +70,25 @@ class NotificationsScreen extends ConsumerWidget {
                           size: 20,
                         ),
                       ),
-                      title: Text(n['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      title: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (n['deviceId'] != null)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              margin: const EdgeInsets.only(bottom: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                n['deviceId'],
+                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.blue),
+                              ),
+                            ),
+                          Text(n['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                        ],
+                      ),
                       subtitle: Text(n['message'] ?? ''),
                       trailing: Text(date != null 
                           ? '${date.hour}:${date.minute.toString().padLeft(2, '0')} ${date.day}/${date.month}' 

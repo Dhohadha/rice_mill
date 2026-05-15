@@ -1,0 +1,296 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:rice_mill/screens/mixed_analysis_screen.dart';
+import '../services/providers.dart';
+import 'share_access_screen.dart';
+import 'notifications_screen.dart';
+
+class ProfileScreen extends ConsumerStatefulWidget {
+  const ProfileScreen({super.key});
+
+  @override
+  ConsumerState<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends ConsumerState<ProfileScreen> {
+  bool _isLoggingOut = false;
+  final Set<String> _processingInvites = {}; // Set of ownerEmails being processed
+
+  @override
+  Widget build(BuildContext context) {
+    final userProfile = ref.watch(userProfileProvider);
+    final email = ref.read(authServiceProvider).currentUser?.email ?? 'User';
+
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        title: const Text('Profile & Settings', style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: Colors.white,
+        elevation: 0,
+        centerTitle: true,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            // Profile Card
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.teal,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(color: Colors.teal.withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 5)),
+                ],
+              ),
+              child: Row(
+                children: [
+                  const CircleAvatar(
+                    radius: 30,
+                    backgroundColor: Colors.white,
+                    child: Icon(Icons.person, color: Colors.teal, size: 40),
+                  ),
+                  const SizedBox(width: 20),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          userProfile.value?['millName'] ?? 'Rice Mill',
+                          style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                        ),
+                        Text(email, style: const TextStyle(color: Colors.white70, fontSize: 14)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 30),
+
+            // Settings List
+            if (userProfile.value?['role'] != 'Guest') ...[
+              if ((userProfile.value?['assignedDevices'] as List<dynamic>? ?? []).length > 1)
+                _buildSettingTile(
+                  icon: Icons.analytics_outlined,
+                  title: 'Aggregate Analysis',
+                  subtitle: 'View combined stats for all devices',
+                  onTap: () {
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => const MixedAnalysisScreen()));
+                  },
+                ),
+              _buildSettingTile(
+                icon: Icons.share,
+                title: 'Share Access',
+                subtitle: 'Give others access to your devices',
+                onTap: () {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const ShareAccessScreen()));
+                },
+              ),
+            ],
+            _buildSettingTile(
+              icon: Icons.history,
+              title: 'Activity History',
+              subtitle: 'View recent alerts and logs',
+              onTap: () {
+                Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationsScreen()));
+              },
+            ),
+            
+            if (userProfile.value?['role'] == 'Guest') ...[
+              const SizedBox(height: 30),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Monitored Devices',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87),
+                ),
+              ),
+              const SizedBox(height: 10),
+              ...(userProfile.value?['assignedDevices'] as List<dynamic>? ?? []).map((id) => _buildDeviceItem(id)),
+            ],
+            
+            // Pending Invitations Section
+            if ((userProfile.value?['pendingInvitations'] as List<dynamic>? ?? []).isNotEmpty) ...[
+              const SizedBox(height: 30),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Pending Invitations',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.orange),
+                ),
+              ),
+              const SizedBox(height: 10),
+              ...(userProfile.value?['pendingInvitations'] as List<dynamic>? ?? []).map((invite) => _buildInvitationItem(context, Map<String, dynamic>.from(invite))),
+            ],
+
+            const SizedBox(height: 20),
+            const Divider(),
+            const SizedBox(height: 20),
+            
+            // Logout Button
+            ListTile(
+              leading: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(color: Colors.red[50], borderRadius: BorderRadius.circular(10)),
+                child: _isLoggingOut 
+                  ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red))
+                  : const Icon(Icons.logout, color: Colors.red),
+              ),
+              title: const Text('Logout', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+              onTap: _isLoggingOut ? null : () async {
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('Logout'),
+                    content: const Text('Are you sure you want to log out?'),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                      TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Logout', style: TextStyle(color: Colors.red))),
+                    ],
+                  ),
+                );
+                if (confirm == true && mounted) {
+                  setState(() => _isLoggingOut = true);
+                  try {
+                    await ref.read(authServiceProvider).signOut();
+                  } finally {
+                    if (mounted) setState(() => _isLoggingOut = false);
+                  }
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSettingTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 15),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.1)),
+      ),
+      child: ListTile(
+        leading: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(color: Colors.teal[50], borderRadius: BorderRadius.circular(10)),
+          child: Icon(icon, color: Colors.teal),
+        ),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+        subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
+        trailing: const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.grey),
+        onTap: onTap,
+      ),
+    );
+  }
+
+  Widget _buildInvitationItem(BuildContext context, Map<String, dynamic> invite) {
+    final ownerEmail = invite['ownerEmail'];
+    final isProcessing = _processingInvites.contains(ownerEmail);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: Colors.orange.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.orange.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.share, color: Colors.orange),
+              const SizedBox(width: 15),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(invite['millName'] ?? 'Rice Mill', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    Text('From: $ownerEmail', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 15),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: isProcessing ? null : () async {
+                  setState(() => _processingInvites.add(ownerEmail));
+                  try {
+                    final success = await ref.read(apiServiceProvider).declineInvitation(ownerEmail);
+                    if (success) ref.invalidate(userProfileProvider);
+                  } finally {
+                    if (mounted) setState(() => _processingInvites.remove(ownerEmail));
+                  }
+                },
+                child: const Text('Decline', style: TextStyle(color: Colors.red)),
+              ),
+              const SizedBox(width: 10),
+              ElevatedButton(
+                onPressed: isProcessing ? null : () async {
+                  setState(() => _processingInvites.add(ownerEmail));
+                  try {
+                    final success = await ref.read(apiServiceProvider).acceptInvitation(ownerEmail);
+                    if (success) ref.invalidate(userProfileProvider);
+                  } finally {
+                    if (mounted) setState(() => _processingInvites.remove(ownerEmail));
+                  }
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+                child: isProcessing 
+                  ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Accept'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDeviceItem(String deviceId) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.1)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.developer_board, color: Colors.teal),
+          const SizedBox(width: 15),
+          Expanded(
+            child: Text(
+              deviceId,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+            onPressed: () async {
+              final success = await ref.read(apiServiceProvider).removeGuestDevice(deviceId);
+              if (success) {
+                ref.invalidate(userProfileProvider);
+              }
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}

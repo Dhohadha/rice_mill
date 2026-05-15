@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const meterDataSchema = new mongoose.Schema({
+  deviceId: { type: String, default: 'RICE_MILL_001', index: true },
   meterId: { type: Number, default: 1 },
   KW: Number,
   KW_R: Number,

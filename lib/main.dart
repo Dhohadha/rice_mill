@@ -2,12 +2,17 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:rice_mill/services/alert_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'services/fcm_service.dart';
-import 'screens/home_screen.dart';
+import 'screens/main_screen.dart';
 import 'screens/notifications_screen.dart';
+import 'screens/login_screen.dart';
+import 'screens/not_registered_screen.dart';
+import 'screens/guest_screen.dart';
 import 'services/notification_service.dart';
+import 'services/alarm_service.dart';
 import 'services/providers.dart';
 
 Future<void> _requestPermissions() async {
@@ -75,7 +80,8 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
     };
 
     notificationService.onStopAlarmAction = () {
-      ref.read(alertManagerProvider.notifier).stopAlarm();
+      // Global stop for all devices
+      AlarmService().stopAlarm();
     };
   }
 
@@ -84,13 +90,22 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
-      ref.read(mqttServiceProvider).disconnect();
-      ref.read(alertManagerProvider.notifier).stopAlarm();
+      ref.read(socketServiceProvider).disconnect();
+      AlarmService().stopAlarm();
     } else if (state == AppLifecycleState.resumed) {
-      // Check if the Stop button was tapped while in background
-      ref.read(alertManagerProvider.notifier).syncStopState();
-      // Reconnect MQTT
-      ref.invalidate(mqttDataProvider);
+      // Check if alarm was stopped in background via notification
+      SharedPreferences.getInstance().then((prefs) {
+        if (prefs.getBool('isAlarmStopped') == true) {
+          AlarmService().stopAlarm();
+          prefs.setBool('isAlarmStopped', false);
+        }
+      });
+
+      // Reconnect WebSocket
+      final user = ref.read(authServiceProvider).currentUser;
+      if (user != null) {
+        ref.invalidate(userProfileProvider);
+      }
     }
   }
 
@@ -108,7 +123,62 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
           titleMedium: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54),
         ),
       ),
-      home: const HomeScreen(),
+      home: Consumer(
+        builder: (context, ref, child) {
+          final authState = ref.watch(authServiceProvider).authStateChanges;
+          
+          return StreamBuilder(
+            stream: authState,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              }
+              
+              if (snapshot.hasData) {
+                // User is authenticated via Google, now check if they are in our DB
+                return Consumer(
+                  builder: (context, ref, child) {
+                    final userProfile = ref.watch(userProfileProvider);
+                    
+                    return userProfile.when(
+                      data: (profile) {
+                        if (profile == null) return const NotRegisteredScreen();
+                        
+                        final role = profile['role'];
+                        final devices = profile['assignedDevices'] as List<dynamic>? ?? [];
+                        final invites = profile['pendingInvitations'] as List<dynamic>? ?? [];
+
+                        if (role == 'Guest' && devices.isEmpty && invites.isEmpty) {
+                          return const GuestScreen();
+                        }
+
+                        if (profile['isRegistered'] == false && role != 'Guest') {
+                          return const NotRegisteredScreen();
+                        }
+                        
+                        return const MainScreen();
+                      },
+                      loading: () => const Scaffold(
+                        body: Center(child: CircularProgressIndicator()),
+                      ),
+                      error: (err, stack) {
+                        // If it's a 403 error (handled in syncUser), show not registered screen
+                        if (err.toString().contains('403')) {
+                          return const NotRegisteredScreen();
+                        }
+                        return Scaffold(
+                          body: Center(child: Text('Registration Error: $err')),
+                        );
+                      },
+                    );
+                  },
+                );
+              }
+              return const LoginScreen();
+            },
+          );
+        },
+      ),
     );
   }
 }

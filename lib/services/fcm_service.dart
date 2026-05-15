@@ -1,9 +1,11 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'notification_service.dart';
 import 'api_service.dart';
+import 'alarm_service.dart';
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -15,12 +17,13 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
   String title = message.data['title'] ?? '⚠️ Rice Mill Alert';
   String body = message.data['body'] ?? 'Limit exceeded';
+  String alertId = message.data['alertId'] ?? 'ALARM_ID';
 
   await notificationService.showThresholdAlert(
     id: 999, // New unified ID
     title: title,
     body: body,
-    payload: 'alarm',
+    payload: alertId,
   );
 }
 
@@ -57,13 +60,17 @@ class FCMService {
       // Extract title and body from data payload since we changed server to send data
       String title = message.data['title'] ?? '⚠️ Rice Mill Alert';
       String body = message.data['body'] ?? 'Limit exceeded';
+      String alertId = message.data['alertId'] ?? 'ALARM_ID';
 
       _notificationService.showThresholdAlert(
         id: message.hashCode,
         title: title,
         body: body,
-        payload: 'alarm',
+        payload: alertId,
       );
+
+      // Play the loud alarm sound explicitly for foreground alerts
+      AlarmService().playAlarm();
     });
 
     // App opened from background/terminated via notification
@@ -87,17 +94,24 @@ class FCMService {
 
   Future<void> _registerTokenWithBackend(String token) async {
     try {
-      // Using ApiService.baseUrl to ensure consistency with other API calls
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      final idToken = await user.getIdToken();
+
       final response = await http.post(
         Uri.parse('${ApiService.baseUrl}/api/fcm-token'),
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $idToken',
+        },
         body: jsonEncode({'token': token}),
       );
 
       if (response.statusCode == 200) {
         debugPrint('Token registered successfully');
       } else {
-        debugPrint('Failed to register token: ${response.statusCode}');
+        debugPrint('Failed to register token: ${response.statusCode} ${response.body}');
       }
     } catch (e) {
       debugPrint('Error registering token: $e');

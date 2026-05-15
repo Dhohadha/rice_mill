@@ -1,7 +1,10 @@
 import 'dart:typed_data';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'alarm_service.dart';
+import 'api_service.dart';
 
 // Background handler - minimal, just records the stop request to SharedPreferences
 // We do NOT initialize Flutter engine here to avoid Samsung freeze bugs
@@ -12,6 +15,11 @@ void notificationTapBackground(NotificationResponse notificationResponse) async 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('isAlarmStopped', true);
     await prefs.setString('lastStoppedTime', DateTime.now().toIso8601String());
+
+    // Notify server even in background
+    if (notificationResponse.payload != null) {
+      await NotificationService.stopAlertOnServer(notificationResponse.payload!);
+    }
   }
 }
 
@@ -50,6 +58,12 @@ class NotificationService {
         if (details.actionId == 'stop_alarm') {
           AlarmService().stopAlarm();
           onStopAlarmAction?.call();
+          
+          // Notify server
+          if (details.payload != null) {
+            stopAlertOnServer(details.payload!);
+          }
+
           // Also clear the SharedPrefs flag if set by background
           SharedPreferences.getInstance().then((prefs) {
             prefs.setBool('isAlarmStopped', true);
@@ -60,6 +74,23 @@ class NotificationService {
       },
       onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
     );
+  }
+
+  static Future<void> stopAlertOnServer(String alertId) async {
+    try {
+      // Using hardcoded IP or ApiService.baseUrl if possible
+      // In background isolate, we use the static baseUrl
+      final url = '${ApiService.baseUrl}/api/stop-alert';
+      print('🌐 Notifying server to stop alert: $alertId at $url');
+      
+      await http.post(
+        Uri.parse(url),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'alertId': alertId}),
+      ).timeout(const Duration(seconds: 5));
+    } catch (e) {
+      print('❌ Error notifying server: $e');
+    }
   }
 
   Future<void> cancelAlert() async {
@@ -73,7 +104,7 @@ class NotificationService {
     String? payload,
   }) async {
     final AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-      'threshold_alerts_v10',
+      'threshold_alerts_v11',
       'Emergency Threshold Alerts',
       channelDescription: 'Critical power alerts with action buttons',
       importance: Importance.max,
@@ -94,7 +125,7 @@ class NotificationService {
         AndroidNotificationAction(
           'stop_alarm',
           '🔕 STOP ALARM',
-          showsUserInterface: true,  // Required for button to work on Samsung
+          showsUserInterface: false, // Set to false to prevent app redirect
           cancelNotification: true,
         ),
       ],
@@ -102,7 +133,11 @@ class NotificationService {
 
     final NotificationDetails platformChannelSpecifics = NotificationDetails(
       android: androidDetails,
-      iOS: const DarwinNotificationDetails(presentSound: true),
+      iOS: const DarwinNotificationDetails(
+        presentSound: true,
+        presentAlert: true,
+        presentBadge: true,
+      ),
     );
 
     await _notificationsPlugin.show(
@@ -110,7 +145,7 @@ class NotificationService {
       title,
       body,
       platformChannelSpecifics,
-      payload: payload,
+      payload: payload ?? 'alarm',
     );
   }
 }

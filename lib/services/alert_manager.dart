@@ -1,3 +1,4 @@
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'notification_service.dart';
@@ -30,22 +31,19 @@ class AlertState {
   }
 }
 
-class AlertManager extends Notifier<AlertState> {
+class AlertManager extends FamilyNotifier<AlertState, String> {
   final NotificationService _notificationService = NotificationService();
   final AlarmService _alarmService = AlarmService();
 
   // Track last alert time to prevent notification spam.
-  // Cleared when value goes back to normal so re-trigger works correctly.
   final Map<String, DateTime> _lastAlertTime = {};
   final Duration _alertCooldown = const Duration(minutes: 5);
-
-  // Track which alert types are currently breached
   final Set<String> _activeBreaches = {};
 
   @override
-  AlertState build() {
-    // Use ref.listen for side effects — never modify state inside build()
-    ref.listen(mqttDataProvider, (previous, next) {
+  AlertState build(String deviceId) {
+    // Listen to the specific device's data
+    ref.listen(mqttDataProvider(deviceId), (previous, next) {
       final settings = ref.read(settingsProvider);
       if (next.hasValue && settings != null) {
         _checkThresholds(next.value!, settings);
@@ -54,7 +52,7 @@ class AlertManager extends Notifier<AlertState> {
 
     ref.listen(settingsProvider, (previous, next) {
       if (next != null) {
-        final meterData = ref.read(mqttDataProvider);
+        final meterData = ref.read(mqttDataProvider(deviceId));
         if (meterData.hasValue) {
           _checkThresholds(meterData.value!, next);
         }
@@ -75,7 +73,6 @@ class AlertManager extends Notifier<AlertState> {
       _maybeNotify('CMD', '⚡ CMD Limit Exceeded', 'Current demand is ${data.kVATotal.toStringAsFixed(1)} kVA');
       _activeBreaches.add('CMD');
     } else {
-      // Value returned to normal — clear cooldown so next breach re-notifies immediately
       if (_activeBreaches.remove('CMD')) {
         _lastAlertTime.remove('CMD');
       }
@@ -105,7 +102,6 @@ class AlertManager extends Notifier<AlertState> {
       }
     }
 
-    // Sync with SharedPreferences (for background stop actions)
     final prefs = await SharedPreferences.getInstance();
     final isStoppedInBg = prefs.getBool('isAlarmStopped') ?? false;
     
@@ -113,26 +109,20 @@ class AlertManager extends Notifier<AlertState> {
        state = state.copyWith(isAlarmStopped: true);
     }
 
-    // Reset background flag if values return to normal
     if (currentAlerts.isEmpty && isStoppedInBg) {
        await prefs.setBool('isAlarmStopped', false);
     }
 
-    // Trigger or auto-stop alarm
-    // Fix: Only trigger if not already playing AND not explicitly stopped for this breach
     if (shouldTriggerAlarm && !state.isAlarmPlaying && !state.isAlarmStopped) {
       _alarmService.playAlarm();
       state = state.copyWith(isAlarmPlaying: true, isAlarmStopped: false, activeAlerts: currentAlerts);
     } else {
-      // Update displayed alerts even while alarm playing or stopped
       if (currentAlerts.join(',') != state.activeAlerts.join(',')) {
         state = state.copyWith(activeAlerts: currentAlerts);
       }
-      // Reset isAlarmStopped when values return to normal so the next breach can trigger
       if (currentAlerts.isEmpty && state.isAlarmStopped) {
         state = state.copyWith(isAlarmStopped: false);
       }
-      // Auto-stop alarm sound when values return to normal
       if (currentAlerts.isEmpty && state.isAlarmPlaying) {
         stopAlarm();
       }
@@ -158,19 +148,16 @@ class AlertManager extends Notifier<AlertState> {
     _alarmService.stopAlarm();
     _notificationService.cancelAlert();
     
-    // Save to SharedPreferences for background/foreground sync
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('isAlarmStopped', true);
     await prefs.setString('lastStoppedTime', DateTime.now().toIso8601String());
 
-    // Set local cooldown
     _lastAlertTime.forEach((key, value) {
       _lastAlertTime[key] = DateTime.now();
     });
     state = state.copyWith(isAlarmPlaying: false, isAlarmStopped: true);
   }
 
-  // Called on app resume to sync background stop actions
   Future<void> syncStopState() async {
     final prefs = await SharedPreferences.getInstance();
     final isStoppedInBg = prefs.getBool('isAlarmStopped') ?? false;
@@ -181,11 +168,10 @@ class AlertManager extends Notifier<AlertState> {
         _lastAlertTime[key] = DateTime.now();
       });
       state = state.copyWith(isAlarmPlaying: false, isAlarmStopped: true);
-      // Don't clear the flag here — let it clear when values normalise
     }
   }
 }
 
-final alertManagerProvider = NotifierProvider<AlertManager, AlertState>(() {
+final alertManagerProvider = NotifierProvider.family<AlertManager, AlertState, String>(() {
   return AlertManager();
 });

@@ -31,7 +31,7 @@ client.on('connect', () => {
     "kVARh_Cap": 50,
     "timestamp": new Date().toISOString()
   };
-  
+
   console.log('Publishing message to', MQTT_TOPIC);
   client.publish(MQTT_TOPIC, JSON.stringify(payload), (err) => {
     if (err) {
