@@ -29,6 +29,15 @@ class ApiService {
     };
   } 
 
+  Future<bool> checkHealth() async {
+    try {
+      final response = await http.get(Uri.parse(baseUrl)).timeout(const Duration(seconds: 3));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<Map<String, dynamic>?> syncUser() async {
     try {
       final response = await http.post(

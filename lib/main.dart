@@ -14,6 +14,7 @@ import 'screens/guest_screen.dart';
 import 'services/notification_service.dart';
 import 'services/alarm_service.dart';
 import 'services/providers.dart';
+import 'widgets/connection_wrapper.dart';
 
 Future<void> _requestPermissions() async {
   if (Platform.isAndroid) {
@@ -80,104 +81,82 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
     };
 
     notificationService.onStopAlarmAction = () {
-      // Global stop for all devices
       AlarmService().stopAlarm();
     };
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
-      ref.read(socketServiceProvider).disconnect();
-      AlarmService().stopAlarm();
-    } else if (state == AppLifecycleState.resumed) {
-      // Check if alarm was stopped in background via notification
-      SharedPreferences.getInstance().then((prefs) {
-        if (prefs.getBool('isAlarmStopped') == true) {
-          AlarmService().stopAlarm();
-          prefs.setBool('isAlarmStopped', false);
-        }
-      });
-
-      // Reconnect WebSocket
-      final user = ref.read(authServiceProvider).currentUser;
-      if (user != null) {
-        ref.invalidate(userProfileProvider);
+  void didChangeAppLifecycleState(AppLifecycleState state) async {
+    if (state == AppLifecycleState.resumed) {
+      final prefs = await SharedPreferences.getInstance();
+      final isAlarmStopped = prefs.getBool('isAlarmStopped') ?? false;
+      
+      if (isAlarmStopped) {
+        AlarmService().stopAlarm();
+        await prefs.setBool('isAlarmStopped', false);
       }
+
+      ref.invalidate(userProfileProvider);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Rice Mill Monitoring',
-      navigatorKey: _navigatorKey,
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
-        useMaterial3: true,
-        textTheme: const TextTheme(
-          headlineMedium: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
-          titleMedium: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54),
+    return ConnectionWrapper(
+      child: MaterialApp(
+        title: 'Rice Mill Monitoring',
+        navigatorKey: _navigatorKey,
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
+          useMaterial3: true,
+          textTheme: const TextTheme(
+            headlineMedium: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
+            titleMedium: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54),
+          ),
         ),
-      ),
-      home: Consumer(
-        builder: (context, ref, child) {
-          final authState = ref.watch(authServiceProvider).authStateChanges;
-          
-          return StreamBuilder(
-            stream: authState,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Scaffold(body: Center(child: CircularProgressIndicator()));
-              }
-              
-              if (snapshot.hasData) {
-                // User is authenticated via Google, now check if they are in our DB
-                return Consumer(
-                  builder: (context, ref, child) {
-                    final userProfile = ref.watch(userProfileProvider);
-                    
-                    return userProfile.when(
-                      data: (profile) {
-                        if (profile == null) return const NotRegisteredScreen();
-                        
-                        final role = profile['role'];
-                        final devices = profile['assignedDevices'] as List<dynamic>? ?? [];
-                        final invites = profile['pendingInvitations'] as List<dynamic>? ?? [];
+        home: Consumer(
+          builder: (context, ref, child) {
+            final authState = ref.watch(authServiceProvider).authStateChanges;
+            
+            return StreamBuilder(
+              stream: authState,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Scaffold(body: Center(child: CircularProgressIndicator()));
+                }
+                
+                if (snapshot.hasData) {
+                  return Consumer(
+                    builder: (context, ref, child) {
+                      final userProfile = ref.watch(userProfileProvider);
+                      
+                      return userProfile.when(
+                        data: (profile) {
+                          if (profile == null) return const NotRegisteredScreen();
+                          
+                          final role = profile['role'];
+                          final devices = profile['assignedDevices'] as List<dynamic>? ?? [];
+                          final invites = profile['pendingInvitations'] as List<dynamic>? ?? [];
 
-                        if (role == 'Guest' && devices.isEmpty && invites.isEmpty) {
-                          return const GuestScreen();
-                        }
+                          if (role == 'Guest' && devices.isEmpty && invites.isEmpty) {
+                            return const GuestScreen();
+                          }
 
-                        if (profile['isRegistered'] == false && role != 'Guest') {
-                          return const NotRegisteredScreen();
-                        }
-                        
-                        return const MainScreen();
-                      },
-                      loading: () => const Scaffold(
-                        body: Center(child: CircularProgressIndicator()),
-                      ),
-                      error: (err, stack) {
-                        // If it's a 403 error (handled in syncUser), show not registered screen
-                        if (err.toString().contains('403')) {
-                          return const NotRegisteredScreen();
-                        }
-                        return Scaffold(
-                          body: Center(child: Text('Registration Error: $err')),
-                        );
-                      },
-                    );
-                  },
-                );
-              }
-              return const LoginScreen();
-            },
-          );
-        },
+                          return const MainScreen();
+                        },
+                        loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
+                        error: (err, _) => Scaffold(body: Center(child: Text('Error: $err'))),
+                      );
+                    },
+                  );
+                }
+                
+                return const LoginScreen();
+              },
+            );
+          },
+        ),
       ),
     );
   }
